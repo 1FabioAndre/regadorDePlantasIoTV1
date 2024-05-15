@@ -1,0 +1,253 @@
+#include <WiFiClientSecure.h>
+#include <PubSubClient.h>
+#include <ArduinoJson.h>
+#include <DHT.h> // Libreria del sensor de temperatura
+
+// Configuración de VARIABLES PARA LOS PINES sensor de temperatura DHT11 -----------------------------
+#define DHTPIN 13
+#define DHTTYPE DHT11
+// ---------------------------------------------------------------------------------------------------
+
+/*
+const char * WIFI_SSID = "Fabio";
+const char * WIFI_PASS = "fabi13oo";*/
+
+const char * WIFI_SSID = "UCB-PREMIUM";
+const char * WIFI_PASS = "lacatoucb";
+
+const char * MQTT_BROKER_HOST = "a29cg1x4fjkk3s-ats.iot.us-east-2.amazonaws.com";
+
+const int MQTT_BROKER_PORT = 8883;
+
+const char * MQTT_CLIENT_ID = "ESP-32";                                               // Unique CLIENT_ID
+const char * UPDATE_TOPIC = "$aws/things/thing/shadow/name/Bomba/update";              // publish
+const char * SUBSCRIBE_TOPIC = "$aws/things/thing/shadow/name/Bomba/update/delta";     // Subscribe
+
+WiFiClientSecure wiFiClient;
+PubSubClient mqttClient(wiFiClient);
+
+StaticJsonDocument<JSON_OBJECT_SIZE(64)> inputDoc;
+StaticJsonDocument<JSON_OBJECT_SIZE(4)> outputDoc;
+char outputBuffer[128];
+
+class RedWifi{
+  private:
+    String wifi_SSID;
+    String wifi_PASS;
+    
+  public:
+    // Constructor que recibe el nombre y la contraseña del wifi
+    RedWifi(String nombre, String clave) : wifi_SSID(nombre), wifi_PASS(clave) {}
+    
+    void conectar(){
+      Serial.print("Connecting to " + wifi_SSID);
+      WiFi.begin(wifi_SSID.c_str(), wifi_PASS.c_str());
+      while (WiFi.status() != WL_CONNECTED) {
+        delay(200);
+        Serial.print(".");
+      }
+      Serial.println(" Connected to WIFI!");
+    }
+};
+
+class BombaAgua{
+  private:
+    int pin;
+  public:
+    BombaAgua(int pinBomba): pin(pinBomba){
+      pinMode(pin, OUTPUT);
+      pinMode(14, OUTPUT);
+    }
+
+    void encenderBomba(){
+      digitalWrite(pin, HIGH);
+      digitalWrite(14, LOW);
+    }
+
+    void apagarBomba(){
+      digitalWrite(pin, LOW);
+      digitalWrite(14, LOW);
+    }
+};
+
+RedWifi red(WIFI_SSID, WIFI_PASS);
+DHT dht(DHTPIN, DHTTYPE); // INICIALIZANDO UN OBJETO DE MI SENSOR DE TEMPERATURA
+BombaAgua bomba(12);
+
+const char AMAZON_ROOT_CA1[] PROGMEM = R"EOF(
+  -----BEGIN CERTIFICATE-----
+MIIDQTCCAimgAwIBAgITBmyfz5m/jAo54vB4ikPmljZbyjANBgkqhkiG9w0BAQsF
+ADA5MQswCQYDVQQGEwJVUzEPMA0GA1UEChMGQW1hem9uMRkwFwYDVQQDExBBbWF6
+b24gUm9vdCBDQSAxMB4XDTE1MDUyNjAwMDAwMFoXDTM4MDExNzAwMDAwMFowOTEL
+MAkGA1UEBhMCVVMxDzANBgNVBAoTBkFtYXpvbjEZMBcGA1UEAxMQQW1hem9uIFJv
+b3QgQ0EgMTCCASIwDQYJKoZIhvcNAQEBBQADggEPADCCAQoCggEBALJ4gHHKeNXj
+ca9HgFB0fW7Y14h29Jlo91ghYPl0hAEvrAIthtOgQ3pOsqTQNroBvo3bSMgHFzZM
+9O6II8c+6zf1tRn4SWiw3te5djgdYZ6k/oI2peVKVuRF4fn9tBb6dNqcmzU5L/qw
+IFAGbHrQgLKm+a/sRxmPUDgH3KKHOVj4utWp+UhnMJbulHheb4mjUcAwhmahRWa6
+VOujw5H5SNz/0egwLX0tdHA114gk957EWW67c4cX8jJGKLhD+rcdqsq08p8kDi1L
+93FcXmn/6pUCyziKrlA4b9v7LWIbxcceVOF34GfID5yHI9Y/QCB/IIDEgEw+OyQm
+jgSubJrIqg0CAwEAAaNCMEAwDwYDVR0TAQH/BAUwAwEB/zAOBgNVHQ8BAf8EBAMC
+AYYwHQYDVR0OBBYEFIQYzIU07LwMlJQuCFmcx7IQTgoIMA0GCSqGSIb3DQEBCwUA
+A4IBAQCY8jdaQZChGsV2USggNiMOruYou6r4lK5IpDB/G/wkjUu0yKGX9rbxenDI
+U5PMCCjjmCXPI6T53iHTfIUJrU6adTrCC2qJeHZERxhlbI1Bjjt/msv0tadQ1wUs
+N+gDS63pYaACbvXy8MWy7Vu33PqUXHeeE6V/Uq2V8viTO96LXFvKWlJbYK8U90vv
+o/ufQJVtMVT8QtPHRh8jrdkPSHCa2XV4cdFyQzR1bldZwgJcJmApzyMZFo6IQ6XU
+5MsI+yMRQ+hDKXJioaldXgjUkK642M4UwtBV8ob2xJNDd2ZhwLnoQdeXeGADbkpy
+rqXRfboQnoZsG4q5WTP468SQvvG5
+-----END CERTIFICATE-----
+)EOF";
+
+const char CERTIFICATE[] PROGMEM = R"KEY(
+  -----BEGIN CERTIFICATE-----
+MIIDWjCCAkKgAwIBAgIVANLVX2cUdH/CyPB9BS2YrDUzzetRMA0GCSqGSIb3DQEB
+CwUAME0xSzBJBgNVBAsMQkFtYXpvbiBXZWIgU2VydmljZXMgTz1BbWF6b24uY29t
+IEluYy4gTD1TZWF0dGxlIFNUPVdhc2hpbmd0b24gQz1VUzAeFw0yNDA0MTYwMDM1
+MTFaFw00OTEyMzEyMzU5NTlaMB4xHDAaBgNVBAMME0FXUyBJb1QgQ2VydGlmaWNh
+dGUwggEiMA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQDA4R3Q2mOVBJ0nqBqV
+JESHpE/bjFYoQyR2RF28/WrIcEXgPyni1yM9Tlx8+5ahmP2fs+Xy3y1pUbcyO5rL
+ACXibH2FRxdAequgsW8i4XNzEV8tZ5hNxFQBUI/ebKEzZX3BKeypNk0oXhNrGZo2
+j3XNwioQAP4b3cvkU104dAzE25yCRAZhk+XY2nXYzeKdglVRPuSTDim+6eF9Y6RT
+y4n3DVQyi8Snh18F7NtxOYTe5g5g7O5oCSD+GzmsonUlnZDatY5654hbVEi3pb6+
+iNSLC3zXWInpoGxzNg9943GRiH7SSMy2/npfhLz6WeewbbpBgezo0iPRVcfvj7na
+AlN/AgMBAAGjYDBeMB8GA1UdIwQYMBaAFC5avc3T2IFm58RhEU0azi6T+iIsMB0G
+A1UdDgQWBBT2UeJ4MQXAc77owIxvJhkRA1M1JjAMBgNVHRMBAf8EAjAAMA4GA1Ud
+DwEB/wQEAwIHgDANBgkqhkiG9w0BAQsFAAOCAQEAle3aUxe03mgQmXwxjjrsdBJA
+OfpJRwyns0MFhBetPVHkcg+jDgLJkaKKjARPOreLQYU1ueDIh22npfxHHpQTnBXJ
+ceulCyGgDLW8erJh2H8vH9AsxVL0w65VlYeNxSg0nemuR5AJ05d6mZeCbSp5/DWG
+ncgDXokEK9/LQmC3wo0PUswu1AAzuenJ2XwbBH+RGkn59/aIR/00Q5quKFFCTx7U
+T2RoXOxtmxdFzsdSlaf/gfT6hiqmILKcApMp+J1ZSY0Yesj2WnpxYSkTqKIGqqgF
++3BOIq4PW9nkGdl9xmDo4RB17c1I8ojm6Q7l+gr/eFHI0SDrKwPDK9U1yFMNtg==
+-----END CERTIFICATE-----
+)KEY";
+  
+const char PRIVATE_KEY[] PROGMEM = R"KEY(
+  -----BEGIN RSA PRIVATE KEY-----
+MIIEowIBAAKCAQEAwOEd0NpjlQSdJ6galSREh6RP24xWKEMkdkRdvP1qyHBF4D8p
+4tcjPU5cfPuWoZj9n7Pl8t8taVG3MjuaywAl4mx9hUcXQHqroLFvIuFzcxFfLWeY
+TcRUAVCP3myhM2V9wSnsqTZNKF4TaxmaNo91zcIqEAD+G93L5FNdOHQMxNucgkQG
+YZPl2Np12M3inYJVUT7kkw4pvunhfWOkU8uJ9w1UMovEp4dfBezbcTmE3uYOYOzu
+aAkg/hs5rKJ1JZ2Q2rWOeueIW1RIt6W+vojUiwt811iJ6aBsczYPfeNxkYh+0kjM
+tv56X4S8+lnnsG26QYHs6NIj0VXH74+52gJTfwIDAQABAoIBABYQaoG+yc99NKEZ
+uNjAylod8MizuBNpAt3ImlSJRNLjDQtHDnqVk8Fqmmftu+CGiNThFnf/EcnPgD5t
+1RpNzQem04EQjddhcQqz4XvDAJr0LMgb5q9WuylfVuXh1Vr0zDrxmdINlSv9/wis
+aBi/toEwKfGku2zipXVcF/jiRaerKNg50sbn29l3EOtO41TuuDiLikxPVQP+FgZC
+yhgWSERgs1HAWAtuPA2tdjCoV19Ch3fWFb51cpQr7GF6+/FjZAdREvL1ZwDHfOmz
+blpS8cWy3vuM+w1t8fJuoPD6Pnq+0DSQNQryDZh6/OWQx3hXQYA/cctbnJF/lJ5o
+aPvaPKECgYEA3yPpVlZsrYvBZ8hivSmrkoIc382WvaDVCMQ6EsQAFqvotlfI/4QP
+rzIfiNFepYptpCfYb8ORzn7ER7C6sFfR7r6Exbf55kQSBR3P/Wmb0VJ775QjPsPN
+jFVhn6HtslD+fXP5HTpGb6xZfp56h0bJvbe8ZDdWRaZky+G+Mvm4HLECgYEA3Uho
+uNQe5XvQV8ZTfqaLoeHjQwbEptbY6wOksMa5cVvXjqTJMlkr1G+Y4KNAY++0ulG/
+28+fEW0fRExyFXJFJe1wmIt2J3Z6YMpHHxLXXC+gXO4dePWBfYVyQGiJas6UoHJF
+7tMbhxRDVqcTR2D6AhZBE4qt09FEKaP+9o/dvy8CgYA1FY8COic6lh/Zt8M9qzck
+8I079OXikOt9XWlPY4991UHUd0fa+ajdjfgQjXaNvUPeJJiJ5iW+0UuSnombQBky
+SeK+QslRrWn4C6Kab9Bg2NWhJkXIPb6dnwZNerFYlYolgDyIZn+xO3hC9iLCIeYG
+mzpXQQ7mHPKnyjl8WQoi0QKBgQCkRJuREc751sccUdsruuEPRIwb9stHe1i+Zg79
+OBj0ARTtDIFbgfzakBmyMR6c0ZaddhByUheorRQ39HQAXbrdY/1hEK6erwI8Fg1k
+EO2UvrpSImX4pHADSWw+ShwxELgev5YQq+DUjwNKMW9LXr9Zi0G2Cw3tn3z1WIvu
+Z3Ba+wKBgHPzdG3avEDm30e6+grn/COtH+npYtLP5VXHUOxHdcisIAPqKhA0csuv
+mTLlpqsKiGvmkHQUFBaYIYVHZR+xGpfdhbPN0Yu9lhcv59FLd9k5ClQgi/q7UDWC
+VP//8T5WjXAUYsIVjwrY7zlgq4xVuolSg04K1e/54OjwlFsaEM/A
+-----END RSA PRIVATE KEY-----
+)KEY";
+
+unsigned char builtInWaterPump = 0;
+
+void reportBuiltInWaterPump(){
+  outputDoc["state"]["reported"]["builtInWaterPump"] = builtInWaterPump;
+  serializeJson(outputDoc, outputBuffer);
+  mqttClient.publish(UPDATE_TOPIC, outputBuffer);
+}
+
+// Pin de la bomba 12
+void setBuiltInWaterPump(){
+  // letIn 0 o 1
+  Serial.print("Valor led: ");
+  Serial.println(builtInWaterPump);
+  if (builtInWaterPump){
+    bomba.encenderBomba();
+  } else {
+    bomba.apagarBomba();
+  }
+  reportBuiltInWaterPump();
+}
+
+void callback(const char * topic, byte * payload, unsigned int length) {
+  String message;
+  for (int i = 0; i < length; i++) message += String((char) payload[i]);
+  Serial.println("Message from topic " + String(topic) + ":" + message);
+  DeserializationError err = deserializeJson(inputDoc, payload);
+  if (!err) {
+    if (String(topic) == SUBSCRIBE_TOPIC) {
+      builtInWaterPump = inputDoc["state"]["builtInWaterPump"].as<int8_t>();
+      setBuiltInWaterPump(); // Actualiza el estado de la bomba de agua según el estado del shadow
+      }
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  // CONEXION AL WIFI ---------------------------------
+  red.conectar();
+  // --------------------------------------------------
+        
+  // SETEANDO CERTIFICADOS XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+  wiFiClient.setCACert(AMAZON_ROOT_CA1);
+  wiFiClient.setCertificate(CERTIFICATE);
+  wiFiClient.setPrivateKey(PRIVATE_KEY);
+  // XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX
+
+  // CONECTANDO AL BROKER DE AWS WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW
+  mqttClient.setServer(MQTT_BROKER_HOST, MQTT_BROKER_PORT);
+  mqttClient.setCallback(callback);
+  
+  Serial.print("Connecting to " + String(MQTT_BROKER_HOST));
+
+  if (mqttClient.connect(MQTT_CLIENT_ID)) {
+    Serial.println(" Connected!");
+    delay(100);
+    mqttClient.subscribe(SUBSCRIBE_TOPIC);
+    //mqttClient.subscribe(SUBSCRIBE_STATE_TOPIC);
+    Serial.println("Subscribed to " + String(SUBSCRIBE_TOPIC));
+    //Serial.println("Subscribed to " + String(SUBSCRIBE_STATE_TOPIC));
+    delay(100);
+    reportBuiltInWaterPump();
+    }
+}
+
+unsigned long previousPublishMillis = 0;
+
+void loop() {
+  float temperature = dht.readTemperature();
+  if (!isnan(temperature) && mqttClient.connected()) {
+    unsigned long now = millis();
+    if (now - previousPublishMillis >= 2000) {
+      previousPublishMillis = now;
+      outputDoc["state"]["reported"]["temperature"] = temperature;
+      serializeJson(outputDoc, outputBuffer); // enviando datos del sensor al update
+      mqttClient.publish(UPDATE_TOPIC, outputBuffer);
+      Serial.print("TEMPERATURA: ");
+      Serial.println(temperature);
+    }
+  } else {
+    Serial.println("Error al leer la temperatura del sensor o MQTT no conectado");
+    Serial.println(temperature);
+    delay(2000);
+    }
+    if (mqttClient.connected()) {
+      mqttClient.loop();
+    } else {
+      Serial.println("MQTT broker not connected!");
+      delay(2000);
+    }
+}
+
+
+
+
+
+
+
+
+
+
+
